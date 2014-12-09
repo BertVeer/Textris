@@ -1,0 +1,465 @@
+#!/usr/bin/python
+
+"""
+TEXTRIS - a console Tetris clone (v0.6)
+Free Software by Bert vt Veer
+Last update: 27-06-2010
+
+Usage: textris <options>
+
+  -h,-help   - Prints this help 
+  -s WxH     - Board size
+  -bw        - Black & white mode
+"""
+
+
+import curses, math
+from sys import argv
+from os import path
+from time import time, sleep
+from random import random
+from copy import deepcopy
+
+
+
+class Parameters:
+	parm = {
+		"ColorMode" : True,
+		"BoardSize" : "10x20",
+		"HelpMode" : False
+	}
+	def __init__(self):
+		count = len(argv)
+		index = 1
+		while index < count:
+			parm = argv[index]
+			if parm == "-bw": self.parm["ColorMode"] = False
+			elif parm in ["?","-h","-help"]: self.parm["HelpMode"] = True
+			elif parm == "-s" and index+1 < count:
+				self.parm["BoardSize"] = argv[index+1]
+				indez = index+1
+			index = index+1
+
+
+
+class CursesApp:
+	def __init__(self, colors=True):
+		self.colors = colors
+		self.timer = time();
+		self.fps = 10
+		self.lines = []
+		self.keydown = 0
+			
+		# Init curses
+		try:
+			self.stdscr = curses.initscr()
+			curses.curs_set(0)
+			curses.noecho()
+			curses.cbreak()
+			self.stdscr.nodelay(1)
+			self.maxy, self.maxx = self.stdscr.getmaxyx()
+		except:
+			print "Display error."
+			sys.exit(1)
+		
+		# Init color
+		if self.colors:
+			curses.start_color()
+			self.stdscr.bkgd(' ', curses.color_pair(5))
+			curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
+			curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLACK)
+			curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+			curses.init_pair(4, curses.COLOR_WHITE, curses.COLOR_RED)
+			curses.init_pair(5, curses.COLOR_WHITE, curses.COLOR_BLUE)
+			curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_GREEN)
+			curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+			curses.init_pair(8, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
+			curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+			curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_WHITE)		
+			
+											
+	def __del__(self):
+		try:
+			curses.nocbreak()
+			curses.echo()
+			curses.curs_set(1)
+			curses.endwin()
+		except:
+			pass
+			
+				
+	def Print(self, x, y, txt, col=0):
+		self.lines.append((y,x,txt,col))
+		
+								
+	def BuildScreen(self):
+		for line in self.lines:
+			if self.colors:
+				self.stdscr.addstr(line[0], line[1], line[2], curses.color_pair(line[3]))
+			else: self.stdscr.addstr(line[0], line[1], line[2])
+		self.lines = []
+		#self.stdscr.refresh()
+
+
+
+class Stats:
+	def __init__(self, size):
+		self.total = [0 for n in range(size)]
+		self.size = size
+		self.Reset()
+	
+			
+	def Reset(self):
+		self.current = [0 for n in range(self.size)]
+
+
+
+class TextAnim:
+	def __init__(self):
+		self.Set("",0)
+		self.active = False
+
+	def Set(self, text, duration, blink=0):
+		self.text = self.text_stor = text
+		self.duration = duration
+		self.blink = blink
+		self.timer = time()
+		self.active = True
+
+	def NextStep(self):
+		if self.active:
+			# Do blinking
+			if self.blink==1:
+				n = math.floor(math.modf(time())[0]*10)
+				if n/2 == int(n/2): self.text = " "*len(self.text)
+				else: self.text = self.text_stor
+			# Check timer
+			if time()-self.timer > self.duration:
+				self.text = self.text_stor = " "*len(self.text)
+				self.active = False
+
+
+
+class Block:
+	typedef = [ 
+		[[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]], # line
+		[[0,0,0,0], [0,1,1,0], [0,1,1,0], [0,0,0,0]], # Square
+		[[0,0,0,0], [0,1,1,1], [0,0,1,0], [0,0,0,0]], # T-section
+		[[0,0,0,0], [0,1,1,0], [0,0,1,1], [0,0,0,0]], # Z-section
+		[[0,0,0,0], [0,0,1,1], [0,1,1,0], [0,0,0,0]], # S-section
+		[[0,0,0,0], [0,1,1,1], [0,0,0,1], [0,0,0,0]], # J-section
+		[[0,0,0,0], [0,1,1,1], [0,1,0,0], [0,0,0,0]]  # L-section
+	]
+	def __init__(self, x=14, y=10):
+		self.types = self.typedef
+		self.shape = int(random()*len(self.types))
+		self.cells = deepcopy(self.types[self.shape])
+		self.color = self.shape+1
+		self.width = 4
+		self.height = 4
+		self.x = x
+		self.y = y
+		self.isDropping = False
+
+	def rotate(self):
+		dcopy = deepcopy(self.cells)
+		for y in range(self.height):
+			for x in range(self.width):
+				self.cells[y][x] = dcopy[self.width-x-1][y]
+
+
+
+class Board:
+	def __init__(self, width=10, height=20):
+		self.width = width
+		self.height = height
+		self.offsx = 30
+		self.offsy = 4
+		self.clear()
+
+	def clear(self, value=0):
+		self.cells = [[value for col in range(self.width)] for row in range(self.height)]
+
+
+
+class Game:	
+	hiscore_file = path.expanduser('~')+"/.textris.hiscore"
+	
+	def __init__(self):
+		self.textanim = TextAnim()
+		self.stats = Stats(len(Block.typedef))	
+		
+		# Init board
+		wh = parms.parm["BoardSize"].split("x")
+		try: self.board = Board(int(wh[0]), int(wh[1]))
+		except: self.board = Board()
+		
+		# Read hiscore
+		try:
+			ifile = open(self.hiscore_file, "r")
+			self.hiscore = int(ifile.readline())
+		except:	self.hiscore = 0	
+		# Start game
+		self.Reset()
+
+
+	def __del__(self):
+		# Write hiscore
+		try:
+			ofile = open(self.hiscore_file, "w")
+			ofile.write(str(self.hiscore))
+		except Exception, exc:
+			print "Exception:",exc #pass
+			
+
+	def Reset(self):
+		self.board.clear()
+		self.score = 0
+		self.level = 0
+		self.timer = time();
+		self.framespeed = 0.8
+		self.lines_total_count = 0
+		self.removelines = [0 for n in range(self.board.height)]	
+		self.curblock = Block(0,self.board.height)
+		self.nextblock = Block(self.board.width+4,11)
+		self.stats.Reset()
+		self.gamestate = "PLAYING"
+		#self.textanim.Set("GAME START", 1.5, 1)
+
+
+	def CheckMove(self, dx=0, dy=0):
+		block = self.curblock
+		for y in range(block.height):
+			for x in range(block.width):
+				px = block.x+x+dx
+				py = block.y+y+dy
+				if block.cells[y][x]!=0:
+				 	if px<0 or px>=self.board.width or py<-5 or py>=self.board.height: return False
+					elif py>=0 and self.board.cells[py][px]!=0: return False
+		return True
+
+
+	def RotateBlock(self):
+		bcopy = deepcopy(self.curblock)
+		self.curblock.rotate()
+		if not self.CheckMove():
+			self.curblock = bcopy
+			
+
+	def RemoveLine(self, y, duration):
+		# Frames to animate before removal
+		self.removelines[y] = duration
+	
+	
+	def RemoveLines(self):
+		rnd = 1+int(random()*len(self.curblock.types)) # same color for all rows
+		for y in range(len(self.removelines)):
+			# Ceck if there are lines to be animated/removed
+			if self.removelines[y]>0:
+				self.removelines[y] = self.removelines[y]-1
+				if self.removelines[y]==0:
+					# Remove line from board
+					for x in range(self.board.width): self.board.cells[y][x] = 0
+					for yb in range(y,0,-1): self.board.cells[yb] = deepcopy(self.board.cells[yb-1])
+				else:
+					# Animate colors
+					for x in range(self.board.width): self.board.cells[y][x] = rnd
+
+		
+	def MoveBlock(self, dx=0, dy=0):
+		block = self.curblock
+		if self.CheckMove(dx,dy): 
+			block.x = block.x+dx
+			block.y = block.y+dy
+		elif dy==1: # Cannot move down
+			# Draw block onto board
+			for y in range(block.height):
+				for x in range(block.width):
+					px = block.x+x
+					py = block.y+y
+					if px>=0 and px<self.board.width and py>=0 and py<self.board.height:
+						if block.cells[y][x]!=0: self.board.cells[py][px] = block.color
+			if block.y<0:
+				# Board filled, game over
+				self.gamestate = "GAMEOVER"
+			else:
+				# Copy active block from nextblock
+				self.curblock = self.nextblock #deepcopy(self.nextblock)
+				self.curblock.x = (self.board.width/2)-2
+				self.curblock.y = -1
+				#self.curblock.isDropping = False
+				self.nextblock = Block(self.board.width+4,11)
+				# Check for filled lines
+				lines_count = 0
+				for y in range(self.board.height):
+					if not 0 in self.board.cells[y]:
+						self.RemoveLine(y,48+lines_count*8)
+						lines_count = lines_count+1
+				# Apply score
+				if lines_count>0:
+					points = [0,100,200,500,1000][lines_count]
+					self.score = self.score + points
+					if self.score>self.hiscore: self.hiscore = self.score
+					self.lines_total_count = self.lines_total_count + lines_count
+					newlevel = int(self.lines_total_count/10)
+					if newlevel>self.level:
+						self.level = newlevel
+						if self.level>=3: self.framespeed = 0.5
+						if self.level>=8: self.framespeed = 0.4
+						if self.level>=12: self.framespeed = 0.3
+						if self.level>=20: self.framespeed = 0.2
+						if self.level>=30: self.framespeed = 0.1
+						self.textanim.Set("LEVEL UP", 3, 1)
+					elif lines_count>1:
+						self.textanim.Set("BONUS X"+str(lines_count), 2, int(lines_count==4))
+				# Update statistics
+				self.stats.current[self.curblock.shape] = self.stats.current[self.curblock.shape] + 1
+				self.stats.total[self.curblock.shape] = self.stats.total[self.curblock.shape] + 1
+
+
+
+class Textris:
+
+	def __init__(self):
+		self.app = CursesApp(parms.parm["ColorMode"]==True)
+		self.game = Game()
+		self.block_graph = ["[]", "[_"][int(parms.parm["ColorMode"])]
+
+
+	def DrawScreenLayout(self):
+		app = self.app
+		board = self.game.board
+		# Draw static text
+		app.Print(0,0," "*(app.maxx),1)
+		app.Print(2,0,"T E X T R I S  -  by Bert vt Veer",1)
+		app.Print(app.maxx-21,0, "textris -h for help",1)
+		app.Print(4,4,"--CONTROLS-------")	
+		app.Print(4,6,"Arrows - Move")	
+		app.Print(4,7,"Up     - Rotate")
+		app.Print(4,8,"Space  - Drop")
+		app.Print(4,10,"P      - Pause")
+		app.Print(4,11,"Q      - Quit")
+		app.Print(board.offsx + board.width*2+8, 13, "Next:")
+		# Statistics
+		app.Print(4,14,"--STATISTICS-----")			
+		chars = ["-", "O", "T", "Z", "S", "J", "L"]
+		for n in range(len(Block.typedef)):
+			app.Print(4,16+n," "+chars[n]+" ", 4+n)
+		# Draw board border		
+		app.Print(board.offsx-1, board.offsy-1, "+"+"--"*board.width+"+")
+		app.Print(board.offsx-1, board.offsy+board.height, "+"+"--"*board.width+"+")
+		for y in range(board.height):
+			app.Print(board.offsx-1, board.offsy+y, "|"+"  "*board.width+"|")
+		
+
+	def DrawBlock(self, block):
+		for y in range(block.height):
+			for x in range(block.width):
+				px = block.x+x
+				py = block.y+y
+				bw = self.game.board.width
+				bh = self.game.board.height
+				if block.cells[y][x]!=0 and (py>=0 and py<bh): # or (px>self.game.board.width)): # improve
+					self.app.Print(self.game.board.offsx+px*2, self.game.board.offsy+py, self.block_graph, block.color+3)
+					
+					
+	def UpdateScreen(self):
+		app = self.app
+		game = self.game
+		# Draw static blocks
+		for y in range(game.board.height):
+			for x in range(0,game.board.width):
+				curval = game.board.cells[y][x]
+				if curval!=0: app.Print(game.board.offsx+x*2, game.board.offsy+y, self.block_graph, curval+3)
+				else: app.Print(game.board.offsx+x*2, game.board.offsy+y, "  ", 2)							
+		# Draw active/next block				
+		for y in range(4): app.Print(game.board.offsx+game.board.width*2+8,15+y,"          ",2) # Clear nextblock
+		if game.gamestate != "GAMEOVER":
+			self.DrawBlock(game.curblock)
+			self.DrawBlock(game.nextblock)
+		# Draw other stuff
+		boffs = game.board.offsx + game.board.width*2
+		app.Print(boffs+8,5, "Score")
+		app.Print(boffs+14,5,"%7i" % game.score, 3)
+		app.Print(boffs+8,7, "Level")
+		app.Print(boffs+14,7,"%7i" % (game.level+1), 3)
+		app.Print(boffs+8,9, "High  %7i" % game.hiscore)
+		# AnimText
+		app.Print(boffs+8,22, game.textanim.text, 3)
+		# Statistics
+		for n in range(len(Block.typedef)):
+			app.Print(8,16+n, "%4i  (%i)  " % (game.stats.current[n], game.stats.total[n]))
+		# Draw overlay board
+		winc = game.board.offsx + game.board.width - 9
+		if game.gamestate == "GAMEOVER":
+			app.Print(winc, game.board.offsy+7, "+----------------+",1)
+			app.Print(winc, game.board.offsy+8, "|   GAME OVER    |",1)
+			app.Print(winc, game.board.offsy+9, "|  press Enter   |",1)
+			app.Print(winc, game.board.offsy+10, "+----------------+",1)
+		elif game.gamestate == "PAUSED":
+			app.Print(winc, game.board.offsy+7, "+----------------+",1)
+			app.Print(winc, game.board.offsy+8, "|     PAUSED     |",1)
+			app.Print(winc, game.board.offsy+9, "+----------------+",1)	
+		# Debug output
+		#app.Print(boffs+8,21, "keydown:%3i" % app.keydown) # debug
+		#app.Print(1,1,"Exception: "+str(exc))
+
+
+	def Update(self):
+		app = self.app
+		game = self.game
+		# Handle gamestates
+		if game.gamestate == "PLAYING":
+			# Check if block has to be moved
+			if app.keydown == 66 or game.curblock.isDropping or time()-game.timer > game.framespeed:
+				game.MoveBlock(0,1)
+				game.timer = time()
+			# In-game controls
+			if app.keydown == 65: game.RotateBlock()
+			if app.keydown == 67: game.MoveBlock(1,0) 
+			if app.keydown == 68: game.MoveBlock(-1,0)
+			if app.keydown == 32: game.curblock.isDropping = True
+			if app.keydown == 112: game.gamestate = "PAUSED"
+			# Line removal animation
+			game.RemoveLines()	
+		elif game.gamestate == "PAUSED":
+			if app.keydown == 112: game.gamestate = "PLAYING"				
+		else:
+			# Other controls
+			if app.keydown == 10: game.Reset()		
+		# Text animation
+		game.textanim.NextStep()
+
+
+	def Run(self):
+		self.DrawScreenLayout()
+		self.UpdateScreen()
+		self.app.BuildScreen()
+		# Main loop
+		while 1:
+			self.Update()
+			curtime = time()
+			if curtime-self.app.timer > 1/self.app.fps:
+				self.UpdateScreen()
+				self.app.BuildScreen()			
+				self.app.timer = time()
+			self.app.keydown = self.app.stdscr.getch()
+			if self.app.keydown == 113: break
+			# Be nice, sleep for a while
+			sleep(0.01)
+
+
+#-----------------------------------------------------------------------
+# PROGRAM START
+#-----------------------------------------------------------------------
+
+#exc = ""
+
+if __name__ == "__main__":
+	
+	# Parse arguments
+	parms = Parameters()
+	if parms.parm["HelpMode"]: print __doc__
+	else:
+		textris = Textris().Run()
+
