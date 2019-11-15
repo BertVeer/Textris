@@ -1,4 +1,4 @@
 # Textris
-CLI Tetris clone for *NIX written in Python.
+Tetris clone for \*NIX (Linux, MacOS etc.)
 
 ![Screenshots](/docs/screenshot.png)
